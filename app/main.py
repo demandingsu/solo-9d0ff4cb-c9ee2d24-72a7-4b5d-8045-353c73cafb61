@@ -9,14 +9,21 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from .db import Database, DuplicateEvidence, DuplicateHandover
 
 DB_PATH = os.environ.get("HANDOVER_DB", "/data/handover.db")
+
+# 让 app.db 里的复用/重判决策能出现在 uvicorn / docker compose 日志中
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 app = FastAPI(
     title="标本同件索引交接 API",
@@ -201,15 +208,43 @@ def get_handover(handover_id: int) -> dict:
     return row
 
 
-@app.post("/handovers/{handover_id}/reverify", response_model=HandoverOut,
-          tags=["交接"],
-          summary="手工重核（补入新证据后可让待补/暂停申请重新判定）")
-def reverify_handover(handover_id: int) -> dict:
-    row = get_db().reverify_handover(handover_id)
-    if row is None:
+@app.post(
+    "/handovers/{handover_id}/reverify",
+    response_model=HandoverOut,
+    tags=["交接"],
+    summary="手工重核（补证后可让待补/暂停申请重新判定；无关增撤直接复用）",
+    responses={
+        200: {
+            "description": (
+                "返回交接对已保存的结论；响应体结构与其他交接接口完全一致。"
+                "响应头 X-Reverify-Decision=reused 表示复用了上次结论"
+                "（未读证据全表、未跑双链求解），recomputed 表示已按当前"
+                "有效证据重新判定。"
+            ),
+            "headers": {
+                "X-Reverify-Decision": {
+                    "description": "本次手工重核是复用旧结论还是重新判定",
+                    "schema": {
+                        "type": "string",
+                        "enum": ["reused", "recomputed"],
+                    },
+                }
+            },
+        }
+    },
+)
+def reverify_handover(
+    handover_id: int, response: Response
+) -> dict:
+    outcome = get_db().reverify_handover_ex(handover_id)
+    if outcome is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"交接申请不存在：id={handover_id}")
-    return row
+    # 仅增加响应头用于演示/观测，响应体仍为原来的 HandoverOut
+    response.headers["X-Reverify-Decision"] = (
+        "reused" if outcome.reused else "recomputed"
+    )
+    return outcome.handover
 
 
 @app.get("/health", tags=["系统"], summary="健康检查")
