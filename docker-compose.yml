@@ -1,0 +1,15 @@
+services:
+  handover-api:
+    build: .
+    image: specimen-handover-api:1.0.0
+    container_name: specimen-handover-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - handover-data:/data
+    environment:
+      HANDOVER_DB: /data/handover.db
+    restart: unless-stopped
+
+volumes:
+  handover-data:
